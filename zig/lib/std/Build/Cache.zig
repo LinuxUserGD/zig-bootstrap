@@ -201,7 +201,7 @@ pub const HashHelper = struct {
             },
             std.Target.Os.TaggedVersionRange => {
                 switch (x) {
-                    .linux => |linux| {
+                    .linux, .android => |linux| {
                         hh.add(linux.range.min);
                         hh.add(linux.range.max);
                         hh.add(linux.glibc);
@@ -1022,6 +1022,37 @@ pub const Manifest = struct {
             }
             // The null byte is a separator, not a terminator.
             buf.items.len -= 1;
+        }
+    }
+
+    pub fn populateOtherManifest(man: *Manifest, other: *Manifest, prefix_map: [4]u8) Allocator.Error!void {
+        const gpa = other.cache.gpa;
+        assert(@typeInfo(std.zig.Server.Message.PathPrefix).Enum.fields.len == man.cache.prefixes_len);
+        assert(man.cache.prefixes_len == 4);
+        for (man.files.keys()) |file| {
+            const prefixed_path: PrefixedPath = .{
+                .prefix = prefix_map[file.prefixed_path.prefix],
+                .sub_path = try gpa.dupe(u8, file.prefixed_path.sub_path),
+            };
+            errdefer gpa.free(prefixed_path.sub_path);
+
+            const gop = try other.files.getOrPutAdapted(gpa, prefixed_path, FilesAdapter{});
+            errdefer _ = other.files.pop();
+
+            if (gop.found_existing) {
+                gpa.free(prefixed_path.sub_path);
+                continue;
+            }
+
+            gop.key_ptr.* = .{
+                .prefixed_path = prefixed_path,
+                .max_file_size = file.max_file_size,
+                .stat = file.stat,
+                .bin_digest = file.bin_digest,
+                .contents = null,
+            };
+
+            other.hash.hasher.update(&gop.key_ptr.bin_digest);
         }
     }
 };

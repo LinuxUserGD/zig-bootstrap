@@ -231,7 +231,7 @@ pub fn PackedIntArrayEndian(comptime Int: type, comptime endian: Endian, comptim
             return Io.get(&self.bytes, index, 0);
         }
 
-        ///Copy the value of `int` into the array at `index`.
+        /// Copy the value of `int` into the array at `index`.
         pub fn set(self: *Self, index: usize, int: Int) void {
             debug.assert(index < int_count);
             return Io.set(&self.bytes, index, 0, int);
@@ -663,7 +663,7 @@ test "PackedInt(Array/Slice)Endian" {
 // don't account for the bounds.
 test "PackedIntArray at end of available memory" {
     switch (builtin.target.os.tag) {
-        .linux, .macos, .ios, .freebsd, .netbsd, .openbsd, .windows => {},
+        .linux, .android, .macos, .ios, .freebsd, .netbsd, .openbsd, .windows => {},
         else => return,
     }
     const PackedArray = PackedIntArray(u3, 8);
@@ -682,7 +682,7 @@ test "PackedIntArray at end of available memory" {
 
 test "PackedIntSlice at end of available memory" {
     switch (builtin.target.os.tag) {
-        .linux, .macos, .ios, .freebsd, .netbsd, .openbsd, .windows => {},
+        .linux, .android, .macos, .ios, .freebsd, .netbsd, .openbsd, .windows => {},
         else => return,
     }
     const PackedSlice = PackedIntSlice(u11);

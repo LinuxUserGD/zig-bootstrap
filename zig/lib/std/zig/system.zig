@@ -167,7 +167,7 @@ pub fn resolveTargetQuery(query: Target.Query) DetectError!Target {
     var os = query_os_tag.defaultVersionRange(query.cpu_arch orelse builtin.cpu.arch);
     if (query.os_tag == null) {
         switch (builtin.target.os.tag) {
-            .linux => {
+            .linux, .android => {
                 const uts = posix.uname();
                 const release = mem.sliceTo(&uts.release, 0);
                 // The release field sometimes has a weird format,
@@ -294,7 +294,7 @@ pub fn resolveTargetQuery(query: Target.Query) DetectError!Target {
     if (query.os_version_min) |min| switch (min) {
         .none => {},
         .semver => |semver| switch (os.tag) {
-            .linux => os.version_range.linux.range.min = semver,
+            .linux, .android => os.version_range.linux.range.min = semver,
             else => os.version_range.semver.min = semver,
         },
         .windows => |win_ver| os.version_range.windows.min = win_ver,
@@ -303,7 +303,7 @@ pub fn resolveTargetQuery(query: Target.Query) DetectError!Target {
     if (query.os_version_max) |max| switch (max) {
         .none => {},
         .semver => |semver| switch (os.tag) {
-            .linux => os.version_range.linux.range.max = semver,
+            .linux, .android => os.version_range.linux.range.max = semver,
             else => os.version_range.semver.max = semver,
         },
         .windows => |win_ver| os.version_range.windows.max = win_ver,
@@ -394,7 +394,7 @@ fn detectNativeCpuAndFeatures(cpu_arch: Target.Cpu.Arch, os: Target.Os, query: T
     }
 
     switch (builtin.os.tag) {
-        .linux => return linux.detectNativeCpuAndFeatures(),
+        .linux, .android => return linux.detectNativeCpuAndFeatures(),
         .macos => return darwin.macos.detectNativeCpuAndFeatures(),
         .windows => return windows.detectNativeCpuAndFeatures(),
         else => {},
@@ -928,7 +928,7 @@ fn detectAbiAndDynamicLinker(
     query: Target.Query,
 ) DetectError!Target {
     const native_target_has_ld = comptime builtin.target.hasDynamicLinker();
-    const is_linux = builtin.target.os.tag == .linux;
+    const is_linux = builtin.target.os.tag == .linux or builtin.target.os.tag == .android;
     const is_solarish = builtin.target.os.tag.isSolarish();
     const have_all_info = query.dynamic_linker.get() != null and
         query.abi != null and (!is_linux or query.abi.?.isGnu());
@@ -1141,6 +1141,7 @@ fn preadAtLeast(file: fs.File, buf: []u8, offset: u64, min_read_len: usize) !usi
         const len = file.pread(buf[i..], offset + i) catch |err| switch (err) {
             error.OperationAborted => unreachable, // Windows-only
             error.WouldBlock => unreachable, // Did not request blocking mode
+            error.Canceled => unreachable, // timerfd is unseekable
             error.NotOpenForReading => unreachable,
             error.SystemResources => return error.SystemResources,
             error.IsDir => return error.UnableToReadElfFile,

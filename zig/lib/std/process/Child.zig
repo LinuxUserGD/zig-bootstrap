@@ -63,6 +63,9 @@ uid: if (native_os == .windows or native_os == .wasi) void else ?posix.uid_t,
 /// Set to change the group id when spawning the child process.
 gid: if (native_os == .windows or native_os == .wasi) void else ?posix.gid_t,
 
+/// Set to change the process group id when spawning the child process.
+pgid: if (native_os == .windows or native_os == .wasi) void else ?posix.pid_t,
+
 /// Set to change the current working directory when spawning the child process.
 cwd: ?[]const u8,
 /// Set to change the current working directory when spawning the child process.
@@ -110,7 +113,7 @@ pub const ResourceUsageStatistics = struct {
     /// if available.
     pub inline fn getMaxRss(rus: ResourceUsageStatistics) ?usize {
         switch (native_os) {
-            .linux => {
+            .linux, .android => {
                 if (rus.rusage) |ru| {
                     return @as(usize, @intCast(ru.maxrss)) * 1024;
                 } else {
@@ -137,7 +140,7 @@ pub const ResourceUsageStatistics = struct {
     }
 
     const rusage_init = switch (native_os) {
-        .linux, .macos, .ios => @as(?posix.rusage, null),
+        .linux, .android, .macos, .ios => @as(?posix.rusage, null),
         .windows => @as(?windows.VM_COUNTERS, null),
         else => {},
     };
@@ -168,6 +171,7 @@ pub const SpawnError = error{
 } ||
     posix.ExecveError ||
     posix.SetIdError ||
+    posix.SetPgidError ||
     posix.ChangeCurDirError ||
     windows.CreateProcessError ||
     windows.GetProcessMemoryInfoError ||
@@ -213,6 +217,7 @@ pub fn init(argv: []const []const u8, allocator: mem.Allocator) ChildProcess {
         .cwd = null,
         .uid = if (native_os == .windows or native_os == .wasi) {} else null,
         .gid = if (native_os == .windows or native_os == .wasi) {} else null,
+        .pgid = if (native_os == .windows or native_os == .wasi) {} else null,
         .stdin = null,
         .stdout = null,
         .stderr = null,
@@ -451,7 +456,7 @@ fn waitUnwrapped(self: *ChildProcess) !void {
     const res: posix.WaitPidResult = res: {
         if (self.request_resource_usage_statistics) {
             switch (native_os) {
-                .linux, .macos, .ios => {
+                .linux, .android, .macos, .ios => {
                     var ru: posix.rusage = undefined;
                     const res = posix.wait4(self.id, 0, &ru);
                     self.resource_usage_statistics.rusage = ru;
@@ -491,7 +496,7 @@ fn cleanupAfterWait(self: *ChildProcess, status: u32) !Term {
     if (self.err_pipe) |err_pipe| {
         defer destroyPipe(err_pipe);
 
-        if (native_os == .linux) {
+        if (native_os == .linux or native_os == .linux) {
             var fd = [1]posix.pollfd{posix.pollfd{
                 .fd = err_pipe[0],
                 .events = posix.POLL.IN,
@@ -673,6 +678,10 @@ fn spawnPosix(self: *ChildProcess) SpawnError!void {
 
         if (self.uid) |uid| {
             posix.setreuid(uid, uid) catch |err| forkChildErrReport(err_pipe[1], err);
+        }
+
+        if (self.pgid) |pid| {
+            posix.setpgid(0, pid) catch |err| forkChildErrReport(err_pipe[1], err);
         }
 
         const err = switch (self.expand_arg0) {

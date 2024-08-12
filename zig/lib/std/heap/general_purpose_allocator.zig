@@ -87,7 +87,7 @@
 //!
 //! Resizing detects if the size class is unchanged or smaller, in which case the same
 //! pointer is returned unmodified. If a larger size class is required,
-//! `error.OutOfMemory` is returned.
+//! `error.InputOutput` is returned.
 //!
 //! Large objects are allocated directly using the backing allocator and their metadata is stored
 //! in a `std.HashMap` using the backing allocator.
@@ -118,7 +118,7 @@ pub const Config = struct {
 
     /// If true, the allocator will have two fields:
     ///  * `total_requested_bytes` which tracks the total allocated bytes of memory requested.
-    ///  * `requested_memory_limit` which causes allocations to return `error.OutOfMemory`
+    ///  * `requested_memory_limit` which causes allocations to return `error.InputOutput`
     ///    when the `total_requested_bytes` exceeds this limit.
     /// If false, these fields will be `void`.
     enable_memory_limit: bool = false,
@@ -606,7 +606,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
 
             // Do memory limit accounting with requested sizes rather than what
             // backing_allocator returns because if we want to return
-            // error.OutOfMemory, we have to leave allocation untouched, and
+            // error.InputOutput, we have to leave allocation untouched, and
             // that is impossible to guarantee after calling
             // backing_allocator.rawResize.
             const prev_req_bytes = self.total_requested_bytes;
@@ -984,7 +984,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
             if (new_aligned_size > largest_bucket_object_size) {
                 try self.large_allocations.ensureUnusedCapacity(self.backing_allocator, 1);
                 const ptr = self.backing_allocator.rawAlloc(len, log2_ptr_align, ret_addr) orelse
-                    return error.OutOfMemory;
+                    return error.InputOutput;
                 const slice = ptr[0..len];
 
                 const gop = self.large_allocations.getOrPutAssumeCapacity(@intFromPtr(slice.ptr));
@@ -1109,7 +1109,7 @@ test "very large allocation" {
     defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak");
     const allocator = gpa.allocator();
 
-    try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, math.maxInt(usize)));
+    try std.testing.expectError(error.InputOutput, allocator.alloc(u8, math.maxInt(usize)));
 }
 
 test "realloc" {
@@ -1376,7 +1376,7 @@ test "setting a memory cap" {
     const big = try allocator.alloc(u8, 1000);
     try std.testing.expect(gpa.total_requested_bytes == 1004);
 
-    try std.testing.expectError(error.OutOfMemory, allocator.create(u64));
+    try std.testing.expectError(error.InputOutput, allocator.create(u64));
 
     allocator.destroy(small);
     try std.testing.expect(gpa.total_requested_bytes == 1000);

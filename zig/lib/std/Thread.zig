@@ -27,7 +27,7 @@ const Impl = if (native_os == .windows)
     WindowsThreadImpl
 else if (use_pthreads)
     PosixThreadImpl
-else if (native_os == .linux)
+else if (native_os == .linux or native_os == .android)
     LinuxThreadImpl
 else if (native_os == .wasi)
     WasiThreadImpl
@@ -37,7 +37,7 @@ else
 impl: Impl,
 
 pub const max_name_len = switch (native_os) {
-    .linux => 15,
+    .linux, .android => 15,
     .windows => 31,
     .macos, .ios, .watchos, .tvos, .visionos => 63,
     .netbsd => 31,
@@ -65,7 +65,7 @@ pub fn setName(self: Thread, name: []const u8) SetNameError!void {
     };
 
     switch (native_os) {
-        .linux => if (use_pthreads) {
+        .linux, .android => if (use_pthreads) {
             if (self.getHandle() == std.c.pthread_self()) {
                 // Set the name of the calling thread (no thread id required).
                 const err = try posix.prctl(.SET_NAME, .{@intFromPtr(name_with_terminator.ptr)});
@@ -170,7 +170,7 @@ pub fn getName(self: Thread, buffer_ptr: *[max_name_len:0]u8) GetNameError!?[]co
     var buffer: [:0]u8 = buffer_ptr;
 
     switch (native_os) {
-        .linux => if (use_pthreads) {
+        .linux, .android => if (use_pthreads) {
             if (self.getHandle() == std.c.pthread_self()) {
                 // Get the name of the calling thread (no thread id required).
                 const err = try posix.prctl(.GET_NAME, .{@intFromPtr(buffer.ptr)});
@@ -259,6 +259,7 @@ pub fn getName(self: Thread, buffer_ptr: *[max_name_len:0]u8) GetNameError!?[]co
 /// Represents an ID per thread guaranteed to be unique only within a process.
 pub const Id = switch (native_os) {
     .linux,
+    .android,
     .dragonfly,
     .netbsd,
     .freebsd,
@@ -385,7 +386,7 @@ pub fn yield() YieldError!void {
 }
 
 /// State to synchronize detachment of spawner thread to spawned thread
-const Completion = std.atomic.Value(enum(u8) {
+const Completion = std.atomic.Value(enum(if (builtin.zig_backend == .stage2_riscv64) u32 else u8) {
     running,
     detached,
     completed,
@@ -484,7 +485,7 @@ const WindowsThreadImpl = struct {
     pub const ThreadHandle = windows.HANDLE;
 
     fn getCurrentId() windows.DWORD {
-        return windows.kernel32.GetCurrentThreadId();
+        return windows.GetCurrentThreadId();
     }
 
     fn getCpuCount() !usize {
@@ -523,9 +524,9 @@ const WindowsThreadImpl = struct {
             }
         };
 
-        const heap_handle = windows.kernel32.GetProcessHeap() orelse return error.OutOfMemory;
+        const heap_handle = windows.kernel32.GetProcessHeap() orelse return error.InputOutput;
         const alloc_bytes = @alignOf(Instance) + @sizeOf(Instance);
-        const alloc_ptr = windows.kernel32.HeapAlloc(heap_handle, 0, alloc_bytes) orelse return error.OutOfMemory;
+        const alloc_ptr = windows.kernel32.HeapAlloc(heap_handle, 0, alloc_bytes) orelse return error.InputOutput;
         errdefer assert(windows.kernel32.HeapFree(heap_handle, 0, alloc_ptr) != 0);
 
         const instance_bytes = @as([*]u8, @ptrCast(alloc_ptr))[0..alloc_bytes];
@@ -589,7 +590,7 @@ const PosixThreadImpl = struct {
 
     fn getCurrentId() Id {
         switch (native_os) {
-            .linux => {
+            .linux, .android => {
                 return LinuxThreadImpl.getCurrentId();
             },
             .macos, .ios, .watchos, .tvos, .visionos => {
@@ -621,7 +622,7 @@ const PosixThreadImpl = struct {
 
     fn getCpuCount() !usize {
         switch (native_os) {
-            .linux => {
+            .linux, .android => {
                 return LinuxThreadImpl.getCpuCount();
             },
             .openbsd => {
@@ -1082,11 +1083,11 @@ const LinuxThreadImpl = struct {
         fn freeAndExit(self: *ThreadCompletion) noreturn {
             switch (target.cpu.arch) {
                 .x86 => asm volatile (
-                    \\  movl $91, %%eax
+                    \\  movl $91, %%eax # SYS_munmap
                     \\  movl %[ptr], %%ebx
                     \\  movl %[len], %%ecx
                     \\  int $128
-                    \\  movl $1, %%eax
+                    \\  movl $1, %%eax # SYS_exit
                     \\  movl $0, %%ebx
                     \\  int $128
                     :
@@ -1095,9 +1096,9 @@ const LinuxThreadImpl = struct {
                     : "memory"
                 ),
                 .x86_64 => asm volatile (
-                    \\  movq $11, %%rax
+                    \\  movq $11, %%rax # SYS_munmap
                     \\  syscall
-                    \\  movq $60, %%rax
+                    \\  movq $60, %%rax # SYS_exit
                     \\  movq $1, %%rdi
                     \\  syscall
                     :
@@ -1105,11 +1106,11 @@ const LinuxThreadImpl = struct {
                       [len] "{rsi}" (self.mapped.len),
                 ),
                 .arm, .armeb, .thumb, .thumbeb => asm volatile (
-                    \\  mov r7, #91
+                    \\  mov r7, #91 // SYS_munmap
                     \\  mov r0, %[ptr]
                     \\  mov r1, %[len]
                     \\  svc 0
-                    \\  mov r7, #1
+                    \\  mov r7, #1 // SYS_exit
                     \\  mov r0, #0
                     \\  svc 0
                     :
@@ -1117,12 +1118,12 @@ const LinuxThreadImpl = struct {
                       [len] "r" (self.mapped.len),
                     : "memory"
                 ),
-                .aarch64, .aarch64_be, .aarch64_32 => asm volatile (
-                    \\  mov x8, #215
+                .aarch64, .aarch64_be => asm volatile (
+                    \\  mov x8, #215 // SYS_munmap
                     \\  mov x0, %[ptr]
                     \\  mov x1, %[len]
                     \\  svc 0
-                    \\  mov x8, #93
+                    \\  mov x8, #93 // SYS_exit
                     \\  mov x0, #0
                     \\  svc 0
                     :
@@ -1132,11 +1133,11 @@ const LinuxThreadImpl = struct {
                 ),
                 .mips, .mipsel => asm volatile (
                     \\  move $sp, $25
-                    \\  li $2, 4091
+                    \\  li $2, 4091 # SYS_munmap
                     \\  move $4, %[ptr]
                     \\  move $5, %[len]
                     \\  syscall
-                    \\  li $2, 4001
+                    \\  li $2, 4001 # SYS_exit
                     \\  li $4, 0
                     \\  syscall
                     :
@@ -1145,11 +1146,11 @@ const LinuxThreadImpl = struct {
                     : "memory"
                 ),
                 .mips64, .mips64el => asm volatile (
-                    \\  li $2, 4091
+                    \\  li $2, 4091 # SYS_munmap
                     \\  move $4, %[ptr]
                     \\  move $5, %[len]
                     \\  syscall
-                    \\  li $2, 4001
+                    \\  li $2, 4001 # SYS_exit
                     \\  li $4, 0
                     \\  syscall
                     :
@@ -1158,11 +1159,11 @@ const LinuxThreadImpl = struct {
                     : "memory"
                 ),
                 .powerpc, .powerpcle, .powerpc64, .powerpc64le => asm volatile (
-                    \\  li 0, 91
+                    \\  li 0, 91 # SYS_munmap
                     \\  mr %[ptr], 3
                     \\  mr %[len], 4
                     \\  sc
-                    \\  li 0, 1
+                    \\  li 0, 1 # SYS_exit
                     \\  li 3, 0
                     \\  sc
                     \\  blr
@@ -1171,12 +1172,25 @@ const LinuxThreadImpl = struct {
                       [len] "r" (self.mapped.len),
                     : "memory"
                 ),
-                .riscv64 => asm volatile (
-                    \\  li a7, 215
+                .riscv32 => asm volatile (
+                    \\  li a7, 215 # SYS_munmap
                     \\  mv a0, %[ptr]
                     \\  mv a1, %[len]
                     \\  ecall
-                    \\  li a7, 93
+                    \\  li a7, 93 # SYS_exit
+                    \\  mv a0, zero
+                    \\  ecall
+                    :
+                    : [ptr] "r" (@intFromPtr(self.mapped.ptr)),
+                      [len] "r" (self.mapped.len),
+                    : "memory"
+                ),
+                .riscv64 => asm volatile (
+                    \\  li a7, 215 # SYS_munmap
+                    \\  mv a0, %[ptr]
+                    \\  mv a1, %[len]
+                    \\  ecall
+                    \\  li a7, 93 # SYS_exit
                     \\  mv a0, zero
                     \\  ecall
                     :
@@ -1196,16 +1210,29 @@ const LinuxThreadImpl = struct {
                     \\  ba 1b
                     \\  restore
                     \\  2:
-                    \\  mov 73, %%g1
+                    \\  mov 73, %%g1 # SYS_munmap
                     \\  mov %[ptr], %%o0
                     \\  mov %[len], %%o1
                     \\  # Flush register window contents to prevent background
                     \\  # memory access before unmapping the stack.
                     \\  flushw
                     \\  t 0x6d
-                    \\  mov 1, %%g1
+                    \\  mov 1, %%g1 # SYS_exit
                     \\  mov 1, %%o0
                     \\  t 0x6d
+                    :
+                    : [ptr] "r" (@intFromPtr(self.mapped.ptr)),
+                      [len] "r" (self.mapped.len),
+                    : "memory"
+                ),
+                .loongarch64 => asm volatile (
+                    \\ or      $a0, $zero, %[ptr]
+                    \\ or      $a1, $zero, %[len]
+                    \\ ori     $a7, $zero, 215     # SYS_munmap
+                    \\ syscall 0                   # call munmap
+                    \\ ori     $a0, $zero, 0
+                    \\ ori     $a7, $zero, 93      # SYS_exit
+                    \\ syscall 0                   # call exit
                     :
                     : [ptr] "r" (@intFromPtr(self.mapped.ptr)),
                       [len] "r" (self.mapped.len),
@@ -1248,9 +1275,9 @@ const LinuxThreadImpl = struct {
             bytes = std.mem.alignForward(usize, bytes, page_size);
             stack_offset = bytes;
 
-            bytes = std.mem.alignForward(usize, bytes, linux.tls.tls_image.alloc_align);
+            bytes = std.mem.alignForward(usize, bytes, linux.tls.area_desc.alignment);
             tls_offset = bytes;
-            bytes += linux.tls.tls_image.alloc_size;
+            bytes += linux.tls.area_desc.size;
 
             bytes = std.mem.alignForward(usize, bytes, @alignOf(Instance));
             instance_offset = bytes;
@@ -1291,12 +1318,12 @@ const LinuxThreadImpl = struct {
         };
 
         // Prepare the TLS segment and prepare a user_desc struct when needed on x86
-        var tls_ptr = linux.tls.prepareTLS(mapped[tls_offset..]);
+        var tls_ptr = linux.tls.prepareArea(mapped[tls_offset..]);
         var user_desc: if (target.cpu.arch == .x86) linux.user_desc else void = undefined;
         if (target.cpu.arch == .x86) {
             defer tls_ptr = @intFromPtr(&user_desc);
             user_desc = .{
-                .entry_number = linux.tls.tls_image.gdt_entry_number,
+                .entry_number = linux.tls.area_desc.gdt_entry_number,
                 .base_addr = tls_ptr,
                 .limit = 0xfffff,
                 .flags = .{

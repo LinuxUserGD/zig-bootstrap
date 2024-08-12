@@ -1493,6 +1493,7 @@ pub const UserInfo = struct {
 pub fn getUserInfo(name: []const u8) !UserInfo {
     return switch (native_os) {
         .linux,
+        .android,
         .macos,
         .watchos,
         .visionos,
@@ -1615,7 +1616,7 @@ pub fn posixGetUserInfo(name: []const u8) !UserInfo {
 
 pub fn getBaseAddress() usize {
     switch (native_os) {
-        .linux => {
+        .linux, .android => {
             const base = std.os.linux.getauxval(std.elf.AT_BASE);
             if (base != 0) {
                 return base;
@@ -1708,7 +1709,7 @@ pub const TotalSystemMemoryError = error{
 /// using QEMU user mode emulation.
 pub fn totalSystemMemory() TotalSystemMemoryError!u64 {
     switch (native_os) {
-        .linux => {
+        .linux, .android => {
             return totalSystemMemoryLinux() catch return error.UnknownTotalSystemMemory;
         },
         .freebsd => {
@@ -1789,10 +1790,7 @@ pub fn cleanExit() void {
 /// On some systems, this raises the limit before seeing ProcessFdQuotaExceeded
 /// errors. On other systems, this does nothing.
 pub fn raiseFileDescriptorLimit() void {
-    const have_rlimit = switch (native_os) {
-        .windows, .wasi => false,
-        else => true,
-    };
+    const have_rlimit = posix.rlimit_resource != void;
     if (!have_rlimit) return;
 
     var lim = posix.getrlimit(.NOFILE) catch return; // Oh well; we tried.
@@ -2034,4 +2032,10 @@ pub fn createWindowsEnvBlock(allocator: mem.Allocator, env_map: *const EnvMap) !
     result[i] = 0;
     i += 1;
     return try allocator.realloc(result, i);
+}
+
+/// Logs an error and then terminates the process with exit code 1.
+pub fn fatal(comptime format: []const u8, format_arguments: anytype) noreturn {
+    std.log.err(format, format_arguments);
+    exit(1);
 }

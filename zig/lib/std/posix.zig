@@ -43,13 +43,21 @@ const wasi = std.os.wasi;
 pub const system = if (use_libc)
     std.c
 else switch (native_os) {
-    .linux => linux,
+    .linux, .android => linux,
     .plan9 => std.os.plan9,
-    else => struct {},
+    else => struct {
+        pub const ucontext_t = void;
+        pub const pid_t = void;
+        pub const pollfd = void;
+        pub const fd_t = void;
+        pub const uid_t = void;
+        pub const gid_t = void;
+    },
 };
 
 pub const AF = system.AF;
 pub const AF_SUN = system.AF_SUN;
+pub const AI = system.AI;
 pub const ARCH = system.ARCH;
 pub const AT = system.AT;
 pub const AT_SUN = system.AT_SUN;
@@ -69,13 +77,12 @@ pub const IOV_MAX = system.IOV_MAX;
 pub const IPPROTO = system.IPPROTO;
 pub const KERN = system.KERN;
 pub const Kevent = system.Kevent;
-pub const LOCK = system.LOCK;
 pub const MADV = system.MADV;
 pub const MAP = system.MAP;
-pub const MSF = system.MSF;
 pub const MAX_ADDR_LEN = system.MAX_ADDR_LEN;
 pub const MFD = system.MFD;
 pub const MMAP2_UNIT = system.MMAP2_UNIT;
+pub const MSF = system.MSF;
 pub const MSG = system.MSG;
 pub const NAME_MAX = system.NAME_MAX;
 pub const O = system.O;
@@ -90,7 +97,6 @@ pub const RR = system.RR;
 pub const S = system.S;
 pub const SA = system.SA;
 pub const SC = system.SC;
-pub const _SC = system._SC;
 pub const SEEK = system.SEEK;
 pub const SHUT = system.SHUT;
 pub const SIG = system.SIG;
@@ -105,20 +111,22 @@ pub const SYS = system.SYS;
 pub const Sigaction = system.Sigaction;
 pub const Stat = system.Stat;
 pub const T = system.T;
-pub const TCSA = system.TCSA;
 pub const TCP = system.TCP;
 pub const VDSO = system.VDSO;
 pub const W = system.W;
+pub const _SC = system._SC;
 pub const addrinfo = system.addrinfo;
 pub const blkcnt_t = system.blkcnt_t;
 pub const blksize_t = system.blksize_t;
 pub const clock_t = system.clock_t;
+pub const clockid_t = system.clockid_t;
 pub const cpu_set_t = system.cpu_set_t;
 pub const dev_t = system.dev_t;
 pub const dl_phdr_info = system.dl_phdr_info;
 pub const empty_sigset = system.empty_sigset;
-pub const filled_sigset = system.filled_sigset;
 pub const fd_t = system.fd_t;
+pub const file_obj = system.file_obj;
+pub const filled_sigset = system.filled_sigset;
 pub const gid_t = system.gid_t;
 pub const ifreq = system.ifreq;
 pub const ino_t = system.ino_t;
@@ -131,10 +139,9 @@ pub const nlink_t = system.nlink_t;
 pub const off_t = system.off_t;
 pub const pid_t = system.pid_t;
 pub const pollfd = system.pollfd;
-pub const port_t = system.port_t;
 pub const port_event = system.port_event;
 pub const port_notify = system.port_notify;
-pub const file_obj = system.file_obj;
+pub const port_t = system.port_t;
 pub const rlim_t = system.rlim_t;
 pub const rlimit = system.rlimit;
 pub const rlimit_resource = system.rlimit_resource;
@@ -154,7 +161,6 @@ pub const ucontext_t = system.ucontext_t;
 pub const uid_t = system.uid_t;
 pub const user_desc = system.user_desc;
 pub const utsname = system.utsname;
-pub const winsize = system.winsize;
 
 pub const termios = system.termios;
 pub const CSIZE = system.CSIZE;
@@ -186,6 +192,27 @@ pub const ACCMODE = enum(u2) {
     RDONLY = 0,
     WRONLY = 1,
     RDWR = 2,
+};
+
+pub const TCSA = enum(c_uint) {
+    NOW,
+    DRAIN,
+    FLUSH,
+    _,
+};
+
+pub const winsize = extern struct {
+    row: u16,
+    col: u16,
+    xpixel: u16,
+    ypixel: u16,
+};
+
+pub const LOCK = struct {
+    pub const SH = 1;
+    pub const EX = 2;
+    pub const NB = 4;
+    pub const UN = 8;
 };
 
 pub const LOG = struct {
@@ -226,6 +253,8 @@ pub fn errno(rc: anytype) E {
 
 /// Closes the file descriptor.
 ///
+/// Asserts the file descriptor is open.
+///
 /// This function is not capable of returning any indication of failure. An
 /// application which wants to ensure writes have succeeded before closing must
 /// call `fsync` before `close`.
@@ -238,13 +267,6 @@ pub fn close(fd: fd_t) void {
     if (native_os == .wasi and !builtin.link_libc) {
         _ = std.os.wasi.fd_close(fd);
         return;
-    }
-    if (builtin.target.isDarwin()) {
-        // This avoids the EINTR problem.
-        switch (errno(std.c.@"close$NOCANCEL"(fd))) {
-            .BADF => unreachable, // Always a race condition.
-            else => return,
-        }
     }
     switch (errno(system.close(fd))) {
         .BADF => unreachable, // Always a race condition.
@@ -329,7 +351,7 @@ pub inline fn fchmodat(dirfd: fd_t, path: []const u8, mode: mode_t, flags: u32) 
 
     // No special handling for linux is needed if we can use the libc fallback
     // or `flags` is empty. Glibc only added the fallback in 2.32.
-    const skip_fchmodat_fallback = native_os != .linux or
+    const skip_fchmodat_fallback = (native_os != .linux and native_os != .android) or
         std.c.versionCheck(.{ .major = 2, .minor = 32, .patch = 0 }) or
         flags == 0;
 
@@ -515,7 +537,7 @@ pub const RebootError = error{
 } || UnexpectedError;
 
 pub const RebootCommand = switch (native_os) {
-    .linux => union(linux.LINUX_REBOOT.CMD) {
+    .linux, .android => union(linux.LINUX_REBOOT.CMD) {
         RESTART: void,
         HALT: void,
         CAD_ON: void,
@@ -530,7 +552,7 @@ pub const RebootCommand = switch (native_os) {
 
 pub fn reboot(cmd: RebootCommand) RebootError!void {
     switch (native_os) {
-        .linux => {
+        .linux, .android => {
             switch (linux.E.init(linux.reboot(
                 .MAGIC1,
                 .MAGIC2,
@@ -571,9 +593,17 @@ pub fn getrandom(buffer: []u8) GetRandomError!void {
     if (native_os == .windows) {
         return windows.RtlGenRandom(buffer);
     }
-    if (native_os == .linux or native_os == .freebsd) {
+    if (builtin.link_libc and @TypeOf(system.arc4random_buf) != void) {
+        system.arc4random_buf(buffer.ptr, buffer.len);
+        return;
+    }
+    if (native_os == .wasi) switch (wasi.random_get(buffer.ptr, buffer.len)) {
+        .SUCCESS => return,
+        else => |err| return unexpectedErrno(err),
+    };
+    if (@TypeOf(system.getrandom) != void) {
         var buf = buffer;
-        const use_c = native_os != .linux or
+        const use_c = (native_os != .linux and native_os != .android) or
             std.c.versionCheck(std.SemanticVersion{ .major = 2, .minor = 25, .patch = 0 });
 
         while (buf.len != 0) {
@@ -590,7 +620,6 @@ pub fn getrandom(buffer: []u8) GetRandomError!void {
                 .INVAL => unreachable,
                 .FAULT => unreachable,
                 .INTR => continue,
-                .NOSYS => return getRandomBytesDevURandom(buf),
                 else => return unexpectedErrno(err),
             }
         }
@@ -603,17 +632,7 @@ pub fn getrandom(buffer: []u8) GetRandomError!void {
             else => return unexpectedErrno(err),
         }
     }
-    switch (native_os) {
-        .netbsd, .openbsd, .macos, .ios, .tvos, .watchos, .visionos => {
-            system.arc4random_buf(buffer.ptr, buffer.len);
-            return;
-        },
-        .wasi => switch (wasi.random_get(buffer.ptr, buffer.len)) {
-            .SUCCESS => return,
-            else => |err| return unexpectedErrno(err),
-        },
-        else => return getRandomBytesDevURandom(buffer),
-    }
+    return getRandomBytesDevURandom(buffer);
 }
 
 fn getRandomBytesDevURandom(buf: []u8) !void {
@@ -645,7 +664,7 @@ pub fn abort() noreturn {
         }
         windows.kernel32.ExitProcess(3);
     }
-    if (!builtin.link_libc and native_os == .linux) {
+    if (!builtin.link_libc and (native_os == .linux or native_os == .android)) {
         // The Linux man page says that the libc abort() function
         // "first unblocks the SIGABRT signal", but this is a footgun
         // for user-defined signal handlers that want to restore some state in
@@ -670,9 +689,7 @@ pub fn abort() noreturn {
             .mask = empty_sigset,
             .flags = 0,
         };
-        sigaction(SIG.ABRT, &sigact, null) catch |err| switch (err) {
-            error.OperationNotSupported => unreachable,
-        };
+        sigaction(SIG.ABRT, &sigact, null);
 
         _ = linux.tkill(linux.gettid(), SIG.ABRT);
 
@@ -700,7 +717,7 @@ pub fn raise(sig: u8) RaiseError!void {
         }
     }
 
-    if (native_os == .linux) {
+    if (native_os == .linux or native_os == .android) {
         var set: sigset_t = undefined;
         // block application signals
         sigprocmask(SIG.BLOCK, &linux.app_mask, &set);
@@ -743,7 +760,7 @@ pub fn exit(status: u8) noreturn {
     if (native_os == .wasi) {
         wasi.proc_exit(status);
     }
-    if (native_os == .linux and !builtin.single_threaded) {
+    if ((native_os == .linux or native_os == .android) and !builtin.single_threaded) {
         linux.exit_group(status);
     }
     if (native_os == .uefi) {
@@ -773,6 +790,10 @@ pub const ReadError = error{
     /// This error occurs when no global event loop is configured,
     /// and reading from the file descriptor would block.
     WouldBlock,
+
+    /// reading a timerfd with CANCEL_ON_SET will lead to this error
+    /// when the clock goes through a discontinuous change
+    Canceled,
 
     /// In WASI, this error occurs when the file descriptor does
     /// not hold the required rights to read from it.
@@ -822,7 +843,7 @@ pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
 
     // Prevents EINVAL.
     const max_count = switch (native_os) {
-        .linux => 0x7ffff000,
+        .linux, .android => 0x7ffff000,
         .macos, .ios, .watchos, .tvos, .visionos => maxInt(i32),
         else => maxInt(isize),
     };
@@ -834,6 +855,7 @@ pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
             .INVAL => unreachable,
             .FAULT => unreachable,
             .AGAIN => return error.WouldBlock,
+            .CANCELED => return error.Canceled,
             .BADF => return error.NotOpenForReading, // Can be a race condition.
             .IO => return error.InputOutput,
             .ISDIR => return error.IsDir,
@@ -961,7 +983,7 @@ pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
 
     // Prevent EINVAL.
     const max_count = switch (native_os) {
-        .linux => 0x7ffff000,
+        .linux, .android => 0x7ffff000,
         .macos, .ios, .watchos, .tvos, .visionos => maxInt(i32),
         else => maxInt(isize),
     };
@@ -1210,7 +1232,7 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
     }
 
     const max_count = switch (native_os) {
-        .linux => 0x7ffff000,
+        .linux, .android => 0x7ffff000,
         .macos, .ios, .watchos, .tvos, .visionos => maxInt(i32),
         else => maxInt(isize),
     };
@@ -1369,7 +1391,7 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
 
     // Prevent EINVAL.
     const max_count = switch (native_os) {
-        .linux => 0x7ffff000,
+        .linux, .android => 0x7ffff000,
         .macos, .ios, .watchos, .tvos, .visionos => maxInt(i32),
         else => maxInt(isize),
     };
@@ -1585,7 +1607,7 @@ pub fn openZ(file_path: [*:0]const u8, flags: O, perm: mode_t) OpenError!fd_t {
             .INTR => continue,
 
             .FAULT => unreachable,
-            .INVAL => unreachable,
+            .INVAL => return error.BadPathName,
             .ACCES => return error.AccessDenied,
             .FBIG => return error.FileTooBig,
             .OVERFLOW => return error.FileTooBig,
@@ -1663,7 +1685,8 @@ pub fn openatWasi(
             .INTR => continue,
 
             .FAULT => unreachable,
-            .INVAL => unreachable,
+            // Provides INVAL with a linux host on a bad path name, but NOENT on Windows
+            .INVAL => return error.BadPathName,
             .BADF => unreachable,
             .ACCES => return error.AccessDenied,
             .FBIG => return error.FileTooBig,
@@ -1754,7 +1777,7 @@ pub fn openatZ(dir_fd: fd_t, file_path: [*:0]const u8, flags: O, mode: mode_t) O
             .INTR => continue,
 
             .FAULT => unreachable,
-            .INVAL => unreachable,
+            .INVAL => return error.BadPathName,
             .BADF => unreachable,
             .ACCES => return error.AccessDenied,
             .FBIG => return error.FileTooBig,
@@ -1851,7 +1874,7 @@ pub fn execveZ(
                 .BADARCH => return error.InvalidExe,
                 else => return unexpectedErrno(err),
             },
-            .linux => switch (err) {
+            .linux, .android => switch (err) {
                 .LIBBAD => return error.InvalidExe,
                 else => return unexpectedErrno(err),
             },
@@ -2184,11 +2207,11 @@ pub const LinkError = UnexpectedError || error{
 
 /// On WASI, both paths should be encoded as valid UTF-8.
 /// On other platforms, both paths are an opaque sequence of bytes with no particular encoding.
-pub fn linkZ(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: i32) LinkError!void {
+pub fn linkZ(oldpath: [*:0]const u8, newpath: [*:0]const u8) LinkError!void {
     if (native_os == .wasi and !builtin.link_libc) {
-        return link(mem.sliceTo(oldpath, 0), mem.sliceTo(newpath, 0), flags);
+        return link(mem.sliceTo(oldpath, 0), mem.sliceTo(newpath, 0));
     }
-    switch (errno(system.link(oldpath, newpath, flags))) {
+    switch (errno(system.link(oldpath, newpath))) {
         .SUCCESS => return,
         .ACCES => return error.AccessDenied,
         .DQUOT => return error.DiskQuota,
@@ -2215,16 +2238,16 @@ pub fn linkZ(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: i32) LinkErr
 
 /// On WASI, both paths should be encoded as valid UTF-8.
 /// On other platforms, both paths are an opaque sequence of bytes with no particular encoding.
-pub fn link(oldpath: []const u8, newpath: []const u8, flags: i32) LinkError!void {
+pub fn link(oldpath: []const u8, newpath: []const u8) LinkError!void {
     if (native_os == .wasi and !builtin.link_libc) {
-        return linkat(wasi.AT.FDCWD, oldpath, wasi.AT.FDCWD, newpath, flags) catch |err| switch (err) {
+        return linkat(wasi.AT.FDCWD, oldpath, wasi.AT.FDCWD, newpath, 0) catch |err| switch (err) {
             error.NotDir => unreachable, // link() does not support directories
             else => |e| return e,
         };
     }
     const old = try toPosixPath(oldpath);
     const new = try toPosixPath(newpath);
-    return try linkZ(&old, &new, flags);
+    return try linkZ(&old, &new);
 }
 
 pub const LinkatError = LinkError || error{NotDir};
@@ -3111,8 +3134,10 @@ pub fn chdir(dir_path: []const u8) ChangeCurDirError!void {
         @compileError("WASI does not support os.chdir");
     } else if (native_os == .windows) {
         var wtf16_dir_path: [windows.PATH_MAX_WIDE]u16 = undefined;
-        const len = try std.unicode.wtf8ToWtf16Le(wtf16_dir_path[0..], dir_path);
-        if (len > wtf16_dir_path.len) return error.NameTooLong;
+        if (try std.unicode.checkWtf8ToWtf16LeOverflow(dir_path, &wtf16_dir_path)) {
+            return error.NameTooLong;
+        }
+        const len = try std.unicode.wtf8ToWtf16Le(&wtf16_dir_path, dir_path);
         return chdirW(wtf16_dir_path[0..len]);
     } else {
         const dir_path_c = try toPosixPath(dir_path);
@@ -3126,9 +3151,12 @@ pub fn chdir(dir_path: []const u8) ChangeCurDirError!void {
 /// On other platforms, `dir_path` is an opaque sequence of bytes with no particular encoding.
 pub fn chdirZ(dir_path: [*:0]const u8) ChangeCurDirError!void {
     if (native_os == .windows) {
+        const dir_path_span = mem.span(dir_path);
         var wtf16_dir_path: [windows.PATH_MAX_WIDE]u16 = undefined;
-        const len = try std.unicode.wtf8ToWtf16Le(wtf16_dir_path[0..], mem.span(dir_path));
-        if (len > wtf16_dir_path.len) return error.NameTooLong;
+        if (try std.unicode.checkWtf8ToWtf16LeOverflow(dir_path_span, &wtf16_dir_path)) {
+            return error.NameTooLong;
+        }
+        const len = try std.unicode.wtf8ToWtf16Le(&wtf16_dir_path, dir_path_span);
         return chdirW(wtf16_dir_path[0..len]);
     } else if (native_os == .wasi and !builtin.link_libc) {
         return chdir(mem.span(dir_path));
@@ -3402,6 +3430,24 @@ pub fn setregid(rgid: gid_t, egid: gid_t) SetIdError!void {
     }
 }
 
+pub const SetPgidError = error{
+    ProcessAlreadyExec,
+    InvalidProcessGroupId,
+    PermissionDenied,
+    ProcessNotFound,
+} || UnexpectedError;
+
+pub fn setpgid(pid: pid_t, pgid: pid_t) SetPgidError!void {
+    switch (errno(system.setpgid(pid, pgid))) {
+        .SUCCESS => return,
+        .ACCES => return error.ProcessAlreadyExec,
+        .INVAL => return error.InvalidProcessGroupId,
+        .PERM => return error.PermissionDenied,
+        .SRCH => return error.ProcessNotFound,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
 /// Test whether a file descriptor refers to a terminal.
 pub fn isatty(handle: fd_t) bool {
     if (native_os == .windows) {
@@ -3428,9 +3474,9 @@ pub fn isatty(handle: fd_t) bool {
 
         return true;
     }
-    if (native_os == .linux) {
+    if (native_os == .linux or native_os == .android) {
         while (true) {
-            var wsz: linux.winsize = undefined;
+            var wsz: winsize = undefined;
             const fd: usize = @bitCast(@as(isize, handle));
             const rc = linux.syscall3(.ioctl, fd, linux.T.IOCGWINSZ, @intFromPtr(&wsz));
             switch (linux.E.init(rc)) {
@@ -4497,22 +4543,23 @@ pub const FanotifyInitError = error{
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
     SystemResources,
-    OperationNotSupported,
     PermissionDenied,
 } || UnexpectedError;
 
 pub fn fanotify_init(flags: std.os.linux.fanotify.InitFlags, event_f_flags: u32) FanotifyInitError!i32 {
-    const rc = system.fanotify_init(flags, event_f_flags);
-    switch (errno(rc)) {
-        .SUCCESS => return @intCast(rc),
-        .INVAL => unreachable,
-        .MFILE => return error.ProcessFdQuotaExceeded,
-        .NFILE => return error.SystemFdQuotaExceeded,
-        .NOMEM => return error.SystemResources,
-        .NOSYS => return error.OperationNotSupported,
-        .PERM => return error.PermissionDenied,
-        else => |err| return unexpectedErrno(err),
+    if (native_os == .linux) {
+        const rc = system.fanotify_init(flags, event_f_flags);
+        switch (errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INVAL => unreachable,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            .NOMEM => return error.SystemResources,
+            .PERM => return error.PermissionDenied,
+            else => |err| return unexpectedErrno(err),
+        }
     }
+    return 1;
 }
 
 pub const FanotifyMarkError = error{
@@ -4522,7 +4569,6 @@ pub const FanotifyMarkError = error{
     FileNotFound,
     SystemResources,
     UserMarkQuotaExceeded,
-    NotImplemented,
     NotDir,
     OperationNotSupported,
     PermissionDenied,
@@ -4563,7 +4609,6 @@ pub fn fanotify_markZ(
         .NOENT => return error.FileNotFound,
         .NOMEM => return error.SystemResources,
         .NOSPC => return error.UserMarkQuotaExceeded,
-        .NOSYS => return error.NotImplemented,
         .NOTDIR => return error.NotDir,
         .OPNOTSUPP => return error.OperationNotSupported,
         .PERM => return error.PermissionDenied,
@@ -4929,8 +4974,7 @@ pub fn pipe() PipeError![2]fd_t {
 }
 
 pub fn pipe2(flags: O) PipeError![2]fd_t {
-    // https://github.com/ziglang/zig/issues/19352
-    if (@hasDecl(system, "pipe2")) {
+    if (@TypeOf(system.pipe2) != void) {
         var fds: [2]fd_t = undefined;
         switch (errno(system.pipe2(&fds, flags))) {
             .SUCCESS => return fds,
@@ -5059,7 +5103,7 @@ pub const SeekError = error{
 
 /// Repositions read/write file offset relative to the beginning.
 pub fn lseek_SET(fd: fd_t, offset: u64) SeekError!void {
-    if (native_os == .linux and !builtin.link_libc and @sizeOf(usize) == 4) {
+    if ((native_os == .linux or native_os == .android) and !builtin.link_libc and @sizeOf(usize) == 4) {
         var result: u64 = undefined;
         switch (errno(system.llseek(fd, offset, &result, SEEK.SET))) {
             .SUCCESS => return,
@@ -5102,7 +5146,7 @@ pub fn lseek_SET(fd: fd_t, offset: u64) SeekError!void {
 
 /// Repositions read/write file offset relative to the current offset.
 pub fn lseek_CUR(fd: fd_t, offset: i64) SeekError!void {
-    if (native_os == .linux and !builtin.link_libc and @sizeOf(usize) == 4) {
+    if ((native_os == .linux or native_os == .android) and !builtin.link_libc and @sizeOf(usize) == 4) {
         var result: u64 = undefined;
         switch (errno(system.llseek(fd, @bitCast(offset), &result, SEEK.CUR))) {
             .SUCCESS => return,
@@ -5144,7 +5188,7 @@ pub fn lseek_CUR(fd: fd_t, offset: i64) SeekError!void {
 
 /// Repositions read/write file offset relative to the end.
 pub fn lseek_END(fd: fd_t, offset: i64) SeekError!void {
-    if (native_os == .linux and !builtin.link_libc and @sizeOf(usize) == 4) {
+    if ((native_os == .linux or native_os == .android) and !builtin.link_libc and @sizeOf(usize) == 4) {
         var result: u64 = undefined;
         switch (errno(system.llseek(fd, @bitCast(offset), &result, SEEK.END))) {
             .SUCCESS => return,
@@ -5186,7 +5230,7 @@ pub fn lseek_END(fd: fd_t, offset: i64) SeekError!void {
 
 /// Returns the read/write file offset relative to the beginning.
 pub fn lseek_CUR_get(fd: fd_t) SeekError!u64 {
-    if (native_os == .linux and !builtin.link_libc and @sizeOf(usize) == 4) {
+    if ((native_os == .linux or native_os == .android) and !builtin.link_libc and @sizeOf(usize) == 4) {
         var result: u64 = undefined;
         switch (errno(system.llseek(fd, 0, &result, SEEK.CUR))) {
             .SUCCESS => return result,
@@ -5367,7 +5411,7 @@ pub fn realpathZ(pathname: [*:0]const u8, out_buffer: *[max_path_bytes]u8) RealP
     }
     if (!builtin.link_libc) {
         const flags: O = switch (native_os) {
-            .linux => .{
+            .linux, .android => .{
                 .NONBLOCK = true,
                 .CLOEXEC = true,
                 .PATH = true,
@@ -5438,8 +5482,8 @@ pub fn realpathW(pathname: []const u16, out_buffer: *[max_path_bytes]u8) RealPat
 /// Spurious wakeups are possible and no precision of timing is guaranteed.
 pub fn nanosleep(seconds: u64, nanoseconds: u64) void {
     var req = timespec{
-        .tv_sec = cast(isize, seconds) orelse maxInt(isize),
-        .tv_nsec = cast(isize, nanoseconds) orelse maxInt(isize),
+        .sec = cast(isize, seconds) orelse maxInt(isize),
+        .nsec = cast(isize, nanoseconds) orelse maxInt(isize),
     };
     var rem: timespec = undefined;
     while (true) {
@@ -5511,10 +5555,10 @@ pub fn dl_iterate_phdr(
         } else unreachable;
 
         var info = dl_phdr_info{
-            .dlpi_addr = base_address,
-            .dlpi_name = "/proc/self/exe",
-            .dlpi_phdr = phdrs.ptr,
-            .dlpi_phnum = ehdr.e_phnum,
+            .addr = base_address,
+            .name = "/proc/self/exe",
+            .phdr = phdrs.ptr,
+            .phnum = ehdr.e_phnum,
         };
 
         return callback(&info, @sizeOf(dl_phdr_info), context);
@@ -5522,24 +5566,24 @@ pub fn dl_iterate_phdr(
 
     // Last return value from the callback function.
     while (it.next()) |entry| {
-        var dlpi_phdr: [*]elf.Phdr = undefined;
-        var dlpi_phnum: u16 = undefined;
+        var phdr: [*]elf.Phdr = undefined;
+        var phnum: u16 = undefined;
 
         if (entry.l_addr != 0) {
             const elf_header: *elf.Ehdr = @ptrFromInt(entry.l_addr);
-            dlpi_phdr = @ptrFromInt(entry.l_addr + elf_header.e_phoff);
-            dlpi_phnum = elf_header.e_phnum;
+            phdr = @ptrFromInt(entry.l_addr + elf_header.e_phoff);
+            phnum = elf_header.e_phnum;
         } else {
             // This is the running ELF image
-            dlpi_phdr = @ptrFromInt(elf_base + ehdr.e_phoff);
-            dlpi_phnum = ehdr.e_phnum;
+            phdr = @ptrFromInt(elf_base + ehdr.e_phoff);
+            phnum = ehdr.e_phnum;
         }
 
         var info = dl_phdr_info{
-            .dlpi_addr = entry.l_addr,
-            .dlpi_name = entry.l_name,
-            .dlpi_phdr = dlpi_phdr,
-            .dlpi_phnum = dlpi_phnum,
+            .addr = entry.l_addr,
+            .name = entry.l_name,
+            .phdr = phdr,
+            .phnum = phnum,
         };
 
         try callback(&info, @sizeOf(dl_phdr_info), context);
@@ -5549,15 +5593,14 @@ pub fn dl_iterate_phdr(
 pub const ClockGetTimeError = error{UnsupportedClock} || UnexpectedError;
 
 /// TODO: change this to return the timespec as a return value
-/// TODO: look into making clk_id an enum
-pub fn clock_gettime(clk_id: i32, tp: *timespec) ClockGetTimeError!void {
+pub fn clock_gettime(clock_id: clockid_t, tp: *timespec) ClockGetTimeError!void {
     if (native_os == .wasi and !builtin.link_libc) {
         var ts: timestamp_t = undefined;
-        switch (system.clock_time_get(@bitCast(clk_id), 1, &ts)) {
+        switch (system.clock_time_get(clock_id, 1, &ts)) {
             .SUCCESS => {
                 tp.* = .{
-                    .tv_sec = @intCast(ts / std.time.ns_per_s),
-                    .tv_nsec = @intCast(ts % std.time.ns_per_s),
+                    .sec = @intCast(ts / std.time.ns_per_s),
+                    .nsec = @intCast(ts % std.time.ns_per_s),
                 };
             },
             .INVAL => return error.UnsupportedClock,
@@ -5566,15 +5609,15 @@ pub fn clock_gettime(clk_id: i32, tp: *timespec) ClockGetTimeError!void {
         return;
     }
     if (native_os == .windows) {
-        if (clk_id == CLOCK.REALTIME) {
+        if (clock_id == .REALTIME) {
             var ft: windows.FILETIME = undefined;
             windows.kernel32.GetSystemTimeAsFileTime(&ft);
             // FileTime has a granularity of 100 nanoseconds and uses the NTFS/Windows epoch.
             const ft64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
             const ft_per_s = std.time.ns_per_s / 100;
             tp.* = .{
-                .tv_sec = @as(i64, @intCast(ft64 / ft_per_s)) + std.time.epoch.windows,
-                .tv_nsec = @as(c_long, @intCast(ft64 % ft_per_s)) * 100,
+                .sec = @as(i64, @intCast(ft64 / ft_per_s)) + std.time.epoch.windows,
+                .nsec = @as(c_long, @intCast(ft64 % ft_per_s)) * 100,
             };
             return;
         } else {
@@ -5583,7 +5626,7 @@ pub fn clock_gettime(clk_id: i32, tp: *timespec) ClockGetTimeError!void {
         }
     }
 
-    switch (errno(system.clock_gettime(clk_id, tp))) {
+    switch (errno(system.clock_gettime(clock_id, tp))) {
         .SUCCESS => return,
         .FAULT => unreachable,
         .INVAL => return error.UnsupportedClock,
@@ -5591,13 +5634,13 @@ pub fn clock_gettime(clk_id: i32, tp: *timespec) ClockGetTimeError!void {
     }
 }
 
-pub fn clock_getres(clk_id: i32, res: *timespec) ClockGetTimeError!void {
+pub fn clock_getres(clock_id: clockid_t, res: *timespec) ClockGetTimeError!void {
     if (native_os == .wasi and !builtin.link_libc) {
         var ts: timestamp_t = undefined;
-        switch (system.clock_res_get(@bitCast(clk_id), &ts)) {
+        switch (system.clock_res_get(@bitCast(clock_id), &ts)) {
             .SUCCESS => res.* = .{
-                .tv_sec = @intCast(ts / std.time.ns_per_s),
-                .tv_nsec = @intCast(ts % std.time.ns_per_s),
+                .sec = @intCast(ts / std.time.ns_per_s),
+                .nsec = @intCast(ts % std.time.ns_per_s),
             },
             .INVAL => return error.UnsupportedClock,
             else => |err| return unexpectedErrno(err),
@@ -5605,7 +5648,7 @@ pub fn clock_getres(clk_id: i32, res: *timespec) ClockGetTimeError!void {
         return;
     }
 
-    switch (errno(system.clock_getres(clk_id, res))) {
+    switch (errno(system.clock_getres(clock_id, res))) {
         .SUCCESS => return,
         .FAULT => unreachable,
         .INVAL => return error.UnsupportedClock,
@@ -5647,10 +5690,13 @@ pub fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) SigaltstackError!void {
 }
 
 /// Examine and change a signal action.
-pub fn sigaction(sig: u6, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) error{OperationNotSupported}!void {
+pub fn sigaction(sig: u6, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) void {
     switch (errno(system.sigaction(sig, act, oact))) {
         .SUCCESS => return,
-        .INVAL, .NOSYS => return error.OperationNotSupported,
+        // EINVAL means the signal is either invalid or some signal that cannot have its action
+        // changed. For POSIX, this means SIGKILL/SIGSTOP. For e.g. Solaris, this also includes the
+        // non-standard SIGWAITING, SIGCANCEL, and SIGLWP. Either way, programmer error.
+        .INVAL => unreachable,
         else => unreachable,
     }
 }
@@ -5666,7 +5712,7 @@ pub fn sigprocmask(flags: u32, noalias set: ?*const sigset_t, noalias oldset: ?*
 }
 
 pub const FutimensError = error{
-    /// times is NULL, or both tv_nsec values are UTIME_NOW, and either:
+    /// times is NULL, or both nsec values are UTIME_NOW, and either:
     /// *  the effective user ID of the caller does not match the  owner
     ///    of  the  file,  the  caller does not have write access to the
     ///    file, and the caller is not privileged (Linux: does not  have
@@ -5678,8 +5724,8 @@ pub const FutimensError = error{
     /// The caller attempted to change one or both timestamps to a value
     /// other than the current time, or to change one of the  timestamps
     /// to the current time while leaving the other timestamp unchanged,
-    /// (i.e., times is not NULL, neither tv_nsec  field  is  UTIME_NOW,
-    /// and neither tv_nsec field is UTIME_OMIT) and either:
+    /// (i.e., times is not NULL, neither nsec  field  is  UTIME_NOW,
+    /// and neither nsec field is UTIME_OMIT) and either:
     /// *  the  caller's  effective  user ID does not match the owner of
     ///    file, and the caller is not privileged (Linux: does not  have
     ///    the CAP_FOWNER capability); or,
@@ -5735,7 +5781,7 @@ pub fn gethostname(name_buffer: *[HOST_NAME_MAX]u8) GetHostNameError![]u8 {
             else => |err| return unexpectedErrno(err),
         }
     }
-    if (native_os == .linux) {
+    if (native_os == .linux or native_os == .android) {
         const uts = uname();
         const hostname = mem.sliceTo(&uts.nodename, 0);
         const result = name_buffer[0..hostname.len];
@@ -5794,9 +5840,9 @@ pub fn res_mkquery(
 
     // Make a reasonably unpredictable id
     var ts: timespec = undefined;
-    clock_gettime(CLOCK.REALTIME, &ts) catch {};
-    const UInt = std.meta.Int(.unsigned, @bitSizeOf(@TypeOf(ts.tv_nsec)));
-    const unsec: UInt = @bitCast(ts.tv_nsec);
+    clock_gettime(.REALTIME, &ts) catch {};
+    const UInt = std.meta.Int(.unsigned, @bitSizeOf(@TypeOf(ts.nsec)));
+    const unsec: UInt = @bitCast(ts.nsec);
     const id: u32 = @truncate(unsec + unsec / 65536);
     q[0] = @truncate(id / 256);
     q[1] = @truncate(id);
@@ -6138,20 +6184,13 @@ pub fn sendfile(
     // Prevents EOVERFLOW.
     const size_t = std.meta.Int(.unsigned, @typeInfo(usize).Int.bits - 1);
     const max_count = switch (native_os) {
-        .linux => 0x7ffff000,
+        .linux, .android => 0x7ffff000,
         .macos, .ios, .watchos, .tvos, .visionos => maxInt(i32),
         else => maxInt(size_t),
     };
 
     switch (native_os) {
-        .linux => sf: {
-            // sendfile() first appeared in Linux 2.2, glibc 2.1.
-            const call_sf = comptime if (builtin.link_libc)
-                std.c.versionCheck(.{ .major = 2, .minor = 1, .patch = 0 })
-            else
-                builtin.os.version_range.linux.range.max.order(.{ .major = 2, .minor = 2, .patch = 0 }) != .lt;
-            if (!call_sf) break :sf;
-
+        .linux, .android => sf: {
             if (headers.len != 0) {
                 const amt = try writev(out_fd, headers);
                 total_written += amt;
@@ -6185,14 +6224,14 @@ pub fn sendfile(
                     .OVERFLOW => unreachable, // We avoid passing too large of a `count`.
                     .NOTCONN => return error.BrokenPipe, // `out_fd` is an unconnected socket
 
-                    .INVAL, .NOSYS => {
+                    .INVAL => {
                         // EINVAL could be any of the following situations:
                         // * Descriptor is not valid or locked
                         // * an mmap(2)-like operation is  not  available  for in_fd
                         // * count is negative
                         // * out_fd has the APPEND flag set
                         // Because of the "mmap(2)-like operation" possibility, we fall back to doing read/write
-                        // manually, the same as ENOSYS.
+                        // manually.
                         break :sf;
                     },
                     .AGAIN => return error.WouldBlock,
@@ -6418,21 +6457,15 @@ pub const CopyFileRangeError = error{
 /// `flags` has different meanings per operating system; refer to the respective man pages.
 ///
 /// These systems support in-kernel data copying:
-/// * Linux 4.5 (cross-filesystem 5.3)
+/// * Linux (cross-filesystem from version 5.3)
 /// * FreeBSD 13.0
 ///
 /// Other systems fall back to calling `pread` / `pwrite`.
 ///
 /// Maximum offsets on Linux and FreeBSD are `maxInt(i64)`.
 pub fn copy_file_range(fd_in: fd_t, off_in: u64, fd_out: fd_t, off_out: u64, len: usize, flags: u32) CopyFileRangeError!usize {
-    const global = struct {
-        var has_copy_file_range = true;
-    };
-
     if ((comptime builtin.os.isAtLeast(.freebsd, .{ .major = 13, .minor = 0, .patch = 0 }) orelse false) or
-        ((comptime builtin.os.isAtLeast(.linux, .{ .major = 4, .minor = 5, .patch = 0 }) orelse false and
-        std.c.versionCheck(.{ .major = 2, .minor = 27, .patch = 0 })) and
-        @atomicLoad(bool, &global.has_copy_file_range, .monotonic)))
+        (comptime builtin.os.tag == .linux and std.c.versionCheck(.{ .major = 2, .minor = 27, .patch = 0 })))
     {
         var off_in_copy: i64 = @bitCast(off_in);
         var off_out_copy: i64 = @bitCast(off_out);
@@ -6466,10 +6499,6 @@ pub fn copy_file_range(fd_in: fd_t, off_in: u64, fd_out: fd_t, off_out: u64, len
                     .PERM => return error.PermissionDenied,
                     .TXTBSY => return error.SwapFile,
                     .XDEV => break, // support for cross-filesystem copy added in Linux 5.3, use fallback
-                    .NOSYS => {
-                        @atomicStore(bool, &global.has_copy_file_range, false, .monotonic);
-                        break;
-                    },
                     else => |err| return unexpectedErrno(err),
                 }
             }
@@ -6737,15 +6766,11 @@ pub const MemFdCreateError = error{
     OutOfMemory,
     /// Either the name provided exceeded `NAME_MAX`, or invalid flags were passed.
     NameTooLong,
-
-    /// memfd_create is available in Linux 3.17 and later. This error is returned
-    /// for older kernel versions.
-    SystemOutdated,
 } || UnexpectedError;
 
 pub fn memfd_createZ(name: [*:0]const u8, flags: u32) MemFdCreateError!fd_t {
     switch (native_os) {
-        .linux => {
+        .linux, .android => {
             // memfd_create is available only in glibc versions starting with 2.27.
             const use_c = std.c.versionCheck(.{ .major = 2, .minor = 27, .patch = 0 });
             const sys = if (use_c) std.c else linux;
@@ -6757,7 +6782,6 @@ pub fn memfd_createZ(name: [*:0]const u8, flags: u32) MemFdCreateError!fd_t {
                 .NFILE => return error.SystemFdQuotaExceeded,
                 .MFILE => return error.ProcessFdQuotaExceeded,
                 .NOMEM => return error.OutOfMemory,
-                .NOSYS => return error.SystemOutdated,
                 else => |err| return unexpectedErrno(err),
             }
         },
@@ -6877,7 +6901,6 @@ pub fn signalfd(fd: fd_t, mask: *const sigset_t, flags: u32) !fd_t {
         .NOMEM => return error.SystemResources,
         .MFILE => return error.ProcessResources,
         .NODEV => return error.InodeMountFail,
-        .NOSYS => return error.SystemOutdated,
         else => |err| return unexpectedErrno(err),
     }
 }
@@ -7158,7 +7181,7 @@ pub fn perf_event_open(
     group_fd: fd_t,
     flags: usize,
 ) PerfEventOpenError!fd_t {
-    if (native_os == .linux) {
+    if (native_os == .linux or native_os == .android) {
         // There is no syscall wrapper for this function exposed by libcs
         const rc = linux.perf_event_open(attr, pid, cpu, group_fd, flags);
         switch (errno(rc)) {
@@ -7195,8 +7218,8 @@ pub const TimerFdCreateError = error{
 pub const TimerFdGetError = error{InvalidHandle} || UnexpectedError;
 pub const TimerFdSetError = TimerFdGetError || error{Canceled};
 
-pub fn timerfd_create(clokid: i32, flags: system.TFD) TimerFdCreateError!fd_t {
-    const rc = system.timerfd_create(clokid, @bitCast(flags));
+pub fn timerfd_create(clock_id: clockid_t, flags: system.TFD) TimerFdCreateError!fd_t {
+    const rc = system.timerfd_create(clock_id, @bitCast(flags));
     return switch (errno(rc)) {
         .SUCCESS => @intCast(rc),
         .INVAL => unreachable,
@@ -7250,7 +7273,7 @@ pub fn ptrace(request: u32, pid: pid_t, addr: usize, signal: usize) PtraceError!
         @compileError("Unsupported OS");
 
     return switch (native_os) {
-        .linux => switch (errno(linux.ptrace(request, pid, addr, signal, 0))) {
+        .linux, .android => switch (errno(linux.ptrace(request, pid, addr, signal, 0))) {
             .SUCCESS => {},
             .SRCH => error.ProcessNotFound,
             .FAULT => unreachable,
@@ -7346,7 +7369,7 @@ pub fn ioctl_SIOCGIFINDEX(fd: fd_t, ifr: *ifreq) IoCtl_SIOCGIFINDEX_Error!void {
     }
 }
 
-const lfs64_abi = native_os == .linux and builtin.link_libc and builtin.abi.isGnu();
+const lfs64_abi = native_os == .linux and builtin.link_libc and builtin.abi.isGnu() or native_os == .android and builtin.link_libc;
 
 /// Whether or not `error.Unexpected` will print its value and a stack trace.
 ///

@@ -4,7 +4,7 @@
 //! LLD is also the default linker for LLVM.
 
 /// If this is not null, an object file is created by LLVM and emitted to zcu_object_sub_path.
-llvm_object: ?*LlvmObject = null,
+llvm_object: ?LlvmObject.Ptr = null,
 
 base: link.File,
 image_base: u64,
@@ -21,6 +21,7 @@ entry: link.File.OpenOptions.Entry,
 entry_addr: ?u32,
 module_definition_file: ?[]const u8,
 pdb_out_path: ?[]const u8,
+repro: bool,
 
 ptr_width: PtrWidth,
 page_size: u32,
@@ -319,6 +320,7 @@ pub fn createEmpty(
             return error.EntryAddressTooBig,
         .module_definition_file = options.module_definition_file,
         .pdb_out_path = options.pdb_out_path,
+        .repro = options.repro,
     };
     if (use_llvm and comp.config.have_zcu) {
         self.llvm_object = try LlvmObject.create(arena, comp);
@@ -1854,11 +1856,23 @@ pub fn flushModule(self: *Coff, arena: Allocator, tid: Zcu.PerThread.Id, prog_no
     assert(!self.imports_count_dirty);
 }
 
-pub fn getDeclVAddr(self: *Coff, _: Zcu.PerThread, decl_index: InternPool.DeclIndex, reloc_info: link.File.RelocInfo) !u64 {
+pub fn getDeclVAddr(self: *Coff, pt: Zcu.PerThread, decl_index: InternPool.DeclIndex, reloc_info: link.File.RelocInfo) !u64 {
     assert(self.llvm_object == null);
-
-    const this_atom_index = try self.getOrCreateAtomForDecl(decl_index);
-    const sym_index = self.getAtom(this_atom_index).getSymbolIndex().?;
+    const zcu = pt.zcu;
+    const ip = &zcu.intern_pool;
+    const decl = zcu.declPtr(decl_index);
+    log.debug("getDeclVAddr {}({d})", .{ decl.fqn.fmt(ip), decl_index });
+    const sym_index = if (decl.isExtern(zcu)) blk: {
+        const name = decl.name.toSlice(ip);
+        const lib_name = if (decl.getOwnedExternFunc(zcu)) |ext_fn|
+            ext_fn.lib_name.toSlice(ip)
+        else
+            decl.getOwnedVariable(zcu).?.lib_name.toSlice(ip);
+        break :blk try self.getGlobalSymbol(name, lib_name);
+    } else blk: {
+        const this_atom_index = try self.getOrCreateAtomForDecl(decl_index);
+        break :blk self.getAtom(this_atom_index).getSymbolIndex().?;
+    };
     const atom_index = self.getAtomIndexForSymbol(.{ .sym_index = reloc_info.parent_atom_index, .file = null }).?;
     const target = SymbolWithLoc{ .sym_index = sym_index, .file = null };
     try Atom.addRelocation(self, atom_index, .{
@@ -2287,7 +2301,7 @@ fn writeHeader(self: *Coff) !void {
         flags.DLL = 1;
     }
 
-    const timestamp = std.time.timestamp();
+    const timestamp = if (self.repro) 0 else std.time.timestamp();
     const size_of_optional_header = @as(u16, @intCast(self.getOptionalHeaderSize() + self.getDataDirectoryHeadersSize()));
     var coff_header = coff.CoffHeader{
         .machine = coff.MachineType.fromTargetCpuArch(target.cpu.arch),
@@ -2765,6 +2779,7 @@ const StringTable = @import("StringTable.zig");
 const Type = @import("../Type.zig");
 const Value = @import("../Value.zig");
 const AnalUnit = InternPool.AnalUnit;
+const dev = @import("../dev.zig");
 
 pub const base_tag: link.File.Tag = .coff;
 

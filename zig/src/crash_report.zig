@@ -163,9 +163,7 @@ pub fn attachSegfaultHandler() void {
         .flags = (posix.SA.SIGINFO | posix.SA.RESTART | posix.SA.RESETHAND),
     };
 
-    debug.updateSegfaultHandler(&act) catch {
-        @panic("unable to install segfault handler, maybe adjust have_segfault_handling_support in std/debug.zig");
-    };
+    debug.updateSegfaultHandler(&act);
 }
 
 fn handleSegfaultPosix(sig: i32, info: *const posix.siginfo_t, ctx_ptr: ?*anyopaque) callconv(.C) noreturn {
@@ -173,7 +171,7 @@ fn handleSegfaultPosix(sig: i32, info: *const posix.siginfo_t, ctx_ptr: ?*anyopa
     PanicSwitch.preDispatch();
 
     const addr = switch (native_os) {
-        .linux => @intFromPtr(info.fields.sigfault.addr),
+        .linux, .android => @intFromPtr(info.fields.sigfault.addr),
         .freebsd, .macos => @intFromPtr(info.addr),
         .netbsd => @intFromPtr(info.info.reason.fault.addr),
         .openbsd => @intFromPtr(info.data.fault.addr),
@@ -258,7 +256,7 @@ const StackContext = union(enum) {
     current: struct {
         ret_addr: ?usize,
     },
-    exception: *const debug.ThreadContext,
+    exception: *debug.ThreadContext,
     not_supported: void,
 
     pub fn dumpStackTrace(ctx: @This()) void {

@@ -78,10 +78,9 @@ pub fn hasValgrindSupport(target: std.Target) bool {
         .x86,
         .x86_64,
         .aarch64,
-        .aarch64_32,
         .aarch64_be,
         => {
-            return target.os.tag == .linux or target.os.tag == .solaris or target.os.tag == .illumos or
+            return target.os.tag == .linux or target.os.tag == .android or target.os.tag == .solaris or target.os.tag == .illumos or
                 (target.os.tag == .windows and target.abi != .msvc);
         },
         else => return false,
@@ -115,13 +114,11 @@ pub fn hasLlvmSupport(target: std.Target, ofmt: std.Target.ObjectFormat) bool {
         .armeb,
         .aarch64,
         .aarch64_be,
-        .aarch64_32,
         .arc,
         .avr,
         .bpfel,
         .bpfeb,
         .csky,
-        .dxil,
         .hexagon,
         .loongarch32,
         .loongarch64,
@@ -135,16 +132,12 @@ pub fn hasLlvmSupport(target: std.Target, ofmt: std.Target.ObjectFormat) bool {
         .powerpcle,
         .powerpc64,
         .powerpc64le,
-        .r600,
         .amdgcn,
         .riscv32,
         .riscv64,
         .sparc,
         .sparc64,
-        .sparcel,
         .s390x,
-        .tce,
-        .tcele,
         .thumb,
         .thumbeb,
         .x86,
@@ -153,28 +146,23 @@ pub fn hasLlvmSupport(target: std.Target, ofmt: std.Target.ObjectFormat) bool {
         .xtensa,
         .nvptx,
         .nvptx64,
-        .le32,
-        .le64,
-        .amdil,
-        .amdil64,
-        .hsail,
-        .hsail64,
-        .spir,
-        .spir64,
-        .spirv,
-        .spirv32,
-        .spirv64,
-        .kalimba,
-        .shave,
         .lanai,
         .wasm32,
         .wasm64,
-        .renderscript32,
-        .renderscript64,
         .ve,
         => true,
 
-        .spu_2 => false,
+        // An LLVM backend exists but we don't currently support using it.
+        .dxil,
+        .spirv,
+        .spirv32,
+        .spirv64,
+        => false,
+
+        // No LLVM backend exists.
+        .kalimba,
+        .spu_2,
+        => false,
     };
 }
 
@@ -280,7 +268,6 @@ pub fn hasRedZone(target: std.Target) bool {
         .x86,
         .aarch64,
         .aarch64_be,
-        .aarch64_32,
         => true,
 
         else => false,
@@ -296,6 +283,38 @@ pub fn libcFullLinkFlags(target: std.Target) []const []const u8 {
             "-lpthread",
             "-lc",
             "-lutil",
+        },
+        .android => &[_][]const u8{
+            "--sysroot=/data/data/com.termux/files",
+            "-rpath=/data/data/com.termux/files/usr/lib",
+            switch (target.cpu.arch) {
+                .x86_64, .aarch64 => "-rpath=/apex/com.android.runtime/lib64/bionic",
+                .x86, .arm => "-rpath=/apex/com.android.runtime/lib/bionic",
+                else => "",
+            },
+            "-dynamic-linker",
+            switch (target.cpu.arch) {
+                .x86_64, .aarch64 => "/system/bin/linker64",
+                .x86, .arm => "/system/bin/linker32",
+                else => "",
+            },
+            "-L/data/data/com.termux/files/usr/lib",
+            switch (target.cpu.arch) {
+                .x86_64 => "-L/data/data/com.termux/files/usr/x86_64-linux-android/lib",
+                .aarch64 => "-L/data/data/com.termux/files/usr/aarch64-linux-android/lib",
+                .x86 => "-L/data/data/com.termux/files/usr/x86-linux-android/lib",
+                .arm => "-L/data/data/com.termux/files/usr/arm-linux-androideabi/lib",
+                else => "",
+            },
+            switch (target.cpu.arch) {
+                .x86_64, .aarch64 => "-L/system/lib64",
+                .x86, .arm => "-L/system/lib",
+                else => "",
+            },
+            "-lc++_shared",
+            "-lm",
+            "-lc",
+            "-ldl",
         },
         .solaris, .illumos => &[_][]const u8{
             "-lm",
@@ -345,7 +364,7 @@ pub fn clangAssemblerSupportsMcpuArg(target: std.Target) bool {
 }
 
 pub fn needUnwindTables(target: std.Target) bool {
-    return target.os.tag == .windows or target.isDarwin() or std.dwarf.abi.supportsUnwinding(target);
+    return target.os.tag == .windows or target.isDarwin() or std.debug.Dwarf.abi.supportsUnwinding(target);
 }
 
 pub fn defaultAddressSpace(
@@ -387,7 +406,6 @@ pub fn addrSpaceCastIsValid(
 
 pub fn llvmMachineAbi(target: std.Target) ?[:0]const u8 {
     const have_float = switch (target.abi) {
-        .gnuilp32 => return "ilp32",
         .gnueabihf, .musleabihf, .eabihf => true,
         else => false,
     };
@@ -424,8 +442,8 @@ pub fn llvmMachineAbi(target: std.Target) ?[:0]const u8 {
 pub fn defaultFunctionAlignment(target: std.Target) Alignment {
     return switch (target.cpu.arch) {
         .arm, .armeb => .@"4",
-        .aarch64, .aarch64_32, .aarch64_be => .@"4",
-        .sparc, .sparcel, .sparc64 => .@"4",
+        .aarch64, .aarch64_be => .@"4",
+        .sparc, .sparc64 => .@"4",
         .riscv64 => .@"2",
         else => .@"1",
     };
@@ -436,12 +454,10 @@ pub fn minFunctionAlignment(target: std.Target) Alignment {
         .arm,
         .armeb,
         .aarch64,
-        .aarch64_32,
         .aarch64_be,
         .riscv32,
         .riscv64,
         .sparc,
-        .sparcel,
         .sparc64,
         => .@"2",
         else => .@"1",
@@ -529,7 +545,7 @@ pub fn zigBackend(target: std.Target, use_llvm: bool) std.builtin.CompilerBacken
         .arm, .armeb, .thumb, .thumbeb => .stage2_arm,
         .x86_64 => .stage2_x86_64,
         .x86 => .stage2_x86,
-        .aarch64, .aarch64_be, .aarch64_32 => .stage2_aarch64,
+        .aarch64, .aarch64_be => .stage2_aarch64,
         .riscv64 => .stage2_riscv64,
         .sparc64 => .stage2_sparc64,
         .spirv64 => .stage2_spirv64,
